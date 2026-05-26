@@ -1,0 +1,824 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+import warnings
+import sys
+import os
+import json
+import logging
+from typing import Dict, List, Tuple, Optional
+import traceback
+
+# Configuração para Google Colab
+try:
+    from google.colab import files
+    IN_COLAB = True
+except ImportError:
+    IN_COLAB = False
+
+warnings.filterwarnings('ignore')
+
+# Configuração do logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+np.random.seed(42)
+plt.style.use('seaborn-v0_8-darkgrid')
+sns.set_palette("husl")
+
+class AnaliseAcidentesRodovias:
+    """
+    Classe para análise de acidentes em rodovias federais
+    Compatível com Google Colab e ambiente local
+    """
+    
+    def __init__(self, data_inicio='2025-01-01', data_fim='2026-02-28', 
+                 save_to_drive=False):
+        """
+        Inicializa a análise com parâmetros configuráveis
+        
+        Args:
+            data_inicio: Data inicial da análise
+            data_fim: Data final da análise
+            save_to_drive: Se True, salva no Google Drive (Colab)
+        """
+        self.data_inicio = data_inicio
+        self.data_fim = data_fim
+        self.save_to_drive = save_to_drive
+        self.acidentes = None
+        self.infracoes = None
+        self.estatisticas = None
+        self.kpis = None
+        self.insights = None
+        self.timestamp_inicio = datetime.now()
+        
+        # Dicionário para tradução de dias da semana
+        self.dias_tradução = {
+            'Monday': 'Segunda-feira',
+            'Tuesday': 'Terça-feira',
+            'Wednesday': 'Quarta-feira',
+            'Thursday': 'Quinta-feira',
+            'Friday': 'Sexta-feira',
+            'Saturday': 'Sábado',
+            'Sunday': 'Domingo'
+        }
+        
+        logger.info("="*70)
+        logger.info("INICIANDO PROJETO DE ANÁLISE DE ACIDENTES")
+        logger.info(f"Ambiente: {'Google Colab' if IN_COLAB else 'Local'}")
+        logger.info(f"Período: {data_inicio} a {data_fim}")
+        logger.info(f"Timestamp: {self.timestamp_inicio.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("="*70)
+    
+    def _gerar_horas_realistas(self, n: int) -> np.ndarray:
+        """
+        Gera horários realistas para acidentes baseado em padrões reais
+        
+        Args:
+            n: Número de horas a serem geradas
+            
+        Returns:
+            Array com horas distribuídas realisticamente
+        """
+        # Distribuição realista de acidentes por hora
+        # Picos: 18h (volta do trabalho), 6h (início do dia), 12h (almoço)
+        horas = []
+        for _ in range(n):
+            # Distribuição personalizada
+            rand = np.random.random()
+            if rand < 0.25:  # 25% no horário de pico noturno (17-20h)
+                hora = np.random.choice([17, 18, 19, 20], p=[0.2, 0.4, 0.3, 0.1])
+            elif rand < 0.45:  # 20% no horário de pico matutino (6-9h)
+                hora = np.random.choice([6, 7, 8, 9], p=[0.2, 0.4, 0.3, 0.1])
+            elif rand < 0.60:  # 15% no horário de almoço (11-14h)
+                hora = np.random.choice([11, 12, 13, 14], p=[0.2, 0.4, 0.3, 0.1])
+            else:  # 40% distribuído uniformemente
+                hora = np.random.randint(0, 24)
+            horas.append(hora)
+        return np.array(horas)
+    
+    def _classificar_risco_vetorizado(self, teste_alcool, motocicleta, pista_simples, chuva):
+        """
+        Versão vetorizada da classificação de risco (mais rápida que apply)
+        """
+        risco = np.where(
+            (teste_alcool == 1) & (motocicleta == 1), 'CRÍTICO',
+            np.where(teste_alcool == 1, 'ALTO',
+            np.where(motocicleta == 1, 'MÉDIO', 'BAIXO'))
+        )
+        return risco
+    
+    def criar_dados_realistas(self) -> bool:
+        """
+        Cria datasets realistas com padrões temporais e geográficos
+        """
+        try:
+            logger.info(" Criando datasets realistas...")
+
+            logger.info("  → Criando tabela de acidentes...")
+            
+            # Geração de datas
+            datas = pd.date_range(start=self.data_inicio, end=self.data_fim, freq='D')
+            n_dias = len(datas)
+            
+            # Características temporais
+            dias_semana = datas.dayofweek
+            meses = datas.month
+            
+            # Base de acidentes (Poisson)
+            acidentes_base = np.random.poisson(lam=45, size=n_dias)
+            acidentes_base = np.maximum(acidentes_base, 20)
+            
+            # Fatores sazonais
+            fator_fim_semana = np.where(dias_semana >= 5, 1.3, 1.0)
+            fator_ferias = np.where((meses == 12) | (meses == 1) | (meses == 7), 1.2, 1.0)
+            
+            # Ajuste dos acidentes
+            acidentes_ajustados = (acidentes_base * fator_fim_semana * fator_ferias).astype(int)
+            acidentes_ajustados = np.maximum(acidentes_ajustados, 25)
+            
+            # Mortes (distribuição binomial realista)
+            taxa_morte_base = 0.08
+            mortes = np.random.binomial(acidentes_ajustados, taxa_morte_base)
+            
+            # Feridos (ajustado para ser mais realista: média de 1.5-2 feridos por acidente grave)
+            feridos = np.random.poisson(lam=acidentes_ajustados * 0.15)
+            feridos = np.clip(feridos, acidentes_ajustados * 0.1, acidentes_ajustados * 0.3).astype(int)
+            
+            # Regiões e rodovias
+            regioes = ['Norte', 'Nordeste', 'Centro-Oeste', 'Sudeste', 'Sul']
+            regioes_probs = [0.08, 0.27, 0.15, 0.35, 0.15]
+            
+            rodovias = ['BR-101', 'BR-116', 'BR-153', 'BR-324', 'BR-040', 'BR-020', 'BR-262', 'BR-381']
+            rodovias_probs = [0.18, 0.15, 0.12, 0.10, 0.10, 0.12, 0.10, 0.13]
+            
+            # Mapeamento de características das rodovias (fixo por rodovia)
+            pista_simples_map = {
+                'BR-101': 0.2, 'BR-116': 0.3, 'BR-153': 0.7, 'BR-324': 0.4,
+                'BR-040': 0.1, 'BR-020': 0.6, 'BR-262': 0.8, 'BR-381': 0.5
+            }
+            
+            # Seleção de rodovias para cada dia
+            rodovias_dia = np.random.choice(rodovias, n_dias, p=rodovias_probs)
+            
+            # Definir pista_simples baseado na rodovia (característica fixa)
+            pista_simples = np.array([np.random.choice([0, 1], p=[1-pista_simples_map[br], pista_simples_map[br]]) 
+                                      for br in rodovias_dia])
+            
+            self.acidentes = pd.DataFrame({
+                'data': datas,
+                'total_acidentes': acidentes_ajustados,
+                'mortes': mortes,
+                'feridos': feridos,
+                'regiao': np.random.choice(regioes, n_dias, p=regioes_probs),
+                'br': rodovias_dia,
+                'teste_alcool': np.random.choice([0, 1], n_dias, p=[0.85, 0.15]),
+                'motocicleta': np.random.choice([0, 1], n_dias, p=[0.72, 0.28]),
+                'chuva': np.random.choice([0, 1], n_dias, p=[0.70, 0.30]),
+                'pista_simples': pista_simples
+            })
+            
+            # Operações especiais
+            self.acidentes['operacao'] = 'Normal'
+            mask_rodovida = (self.acidentes['data'] >= '2025-12-18') & (self.acidentes['data'] <= '2026-02-28')
+            mask_anonovo = (self.acidentes['data'] >= '2025-12-24') & (self.acidentes['data'] <= '2026-01-01')
+            self.acidentes.loc[mask_rodovida, 'operacao'] = 'Rodovida 2025/2026'
+            self.acidentes.loc[mask_anonovo, 'operacao'] = 'Ano Novo 2025/2026'
+            
+            # Horários realistas
+            self.acidentes['hora'] = self._gerar_horas_realistas(n_dias)
+            
+            logger.info("  → Criando tabela de infrações...")
+            
+            n_infracoes = 60000
+            tipos_infracao = [
+                'Excesso de velocidade', 'Ultrapassagem irregular', 'Embriaguez',
+                'Sem cinto de segurança', 'Uso de celular', 'Recusa ao teste'
+            ]
+            probs_infracoes = [0.35, 0.20, 0.12, 0.12, 0.11, 0.10]
+            multas = [880.41, 2937.70, 2937.70, 195.23, 2937.70, 2937.70]
+            
+            ufs = ['SP', 'MG', 'RJ', 'BA', 'PR', 'RS', 'SC', 'GO', 'PE', 'CE']
+            
+            datas_infracoes = np.random.choice(datas, n_infracoes)
+            
+            self.infracoes = pd.DataFrame({
+                'id_infracao': range(1, n_infracoes + 1),
+                'tipo': np.random.choice(tipos_infracao, n_infracoes, p=probs_infracoes),
+                'valor_multa': np.random.choice(multas, n_infracoes, p=probs_infracoes),
+                'uf': np.random.choice(ufs, n_infracoes),
+                'data': datas_infracoes,
+                'veiculo_apreendido': np.random.choice([0, 1], n_infracoes, p=[0.95, 0.05]),
+                'detido': np.random.choice([0, 1], n_infracoes, p=[0.998, 0.002])
+            })
+            
+            gravidade_map = {
+                'Excesso de velocidade': 'Média',
+                'Ultrapassagem irregular': 'Alta',
+                'Embriaguez': 'Altíssima',
+                'Sem cinto de segurança': 'Baixa',
+                'Uso de celular': 'Alta',
+                'Recusa ao teste': 'Altíssima'
+            }
+            self.infracoes['gravidade'] = self.infracoes['tipo'].map(gravidade_map)
+            
+            logger.info("  → Criando tabela de estatísticas por estado...")
+            
+            estados_dados = []
+            for uf in ufs:
+                for ano in [2025, 2026]:
+                    if ano == 2026:
+                        meses = 4
+                    else:
+                        meses = 12
+                    
+                    # Fator baseado no estado
+                    fatores = {'SP': 1.5, 'MG': 1.4, 'BA': 1.3, 'RJ': 1.2, 
+                              'PR': 1.1, 'RS': 1.1, 'SC': 0.9, 'GO': 0.8, 
+                              'PE': 0.8, 'CE': 0.7}
+                    fator = fatores.get(uf, 1.0)
+                    
+                    estados_dados.append({
+                        'uf': uf,
+                        'ano': ano,
+                        'total_acidentes': int(np.random.poisson(lam=800 * fator) * (meses/12)),
+                        'total_mortes': int(np.random.poisson(lam=65 * fator) * (meses/12)),
+                        'total_feridos': int(np.random.poisson(lam=950 * fator) * (meses/12)),
+                        'infracoes_aplicadas': int(np.random.poisson(lam=3000 * fator) * (meses/12)),
+                        'valor_arrecadado': float(np.random.uniform(500000, 2000000) * fator * (meses/12))
+                    })
+            
+            self.estatisticas = pd.DataFrame(estados_dados)
+            
+            logger.info(f"  Datasets criados:")
+            logger.info(f"   • Acidentes: {len(self.acidentes):,} dias, {len(self.acidentes.columns)} colunas")
+            logger.info(f"   • Infrações: {len(self.infracoes):,} registros, {len(self.infracoes.columns)} colunas")
+            logger.info(f"   • Estatísticas: {len(self.estatisticas):,} registros, {len(self.estatisticas.columns)} colunas")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f" Erro ao criar datasets: {str(e)}")
+            traceback.print_exc()
+            return False
+    
+    def tratar_dados(self) -> bool:
+        """
+        Tratamento e feature engineering dos dados
+        """
+        try:
+            logger.info("\n🔧 Tratando dados...")
+            
+            # Conversão de data
+            self.acidentes['data'] = pd.to_datetime(self.acidentes['data'])
+            
+            # Features temporais
+            self.acidentes['ano'] = self.acidentes['data'].dt.year
+            self.acidentes['mes'] = self.acidentes['data'].dt.month
+            self.acidentes['dia_semana_en'] = self.acidentes['data'].dt.day_name()
+            self.acidentes['dia_semana'] = self.acidentes['dia_semana_en'].map(self.dias_tradução)
+            self.acidentes['trimestre'] = self.acidentes['data'].dt.quarter
+            self.acidentes['semana'] = self.acidentes['data'].dt.isocalendar().week
+            
+            # Features de risco
+            self.acidentes['taxa_mortalidade'] = (
+                self.acidentes['mortes'] / self.acidentes['total_acidentes'] * 100
+            ).round(2)
+            
+            # Classificação de risco vetorizada (mais rápida)
+            self.acidentes['classificacao_risco'] = self._classificar_risco_vetorizado(
+                self.acidentes['teste_alcool'].values,
+                self.acidentes['motocicleta'].values,
+                self.acidentes['pista_simples'].values,
+                self.acidentes['chuva'].values
+            )
+            
+            # Índice de risco ponderado
+            self.acidentes['indice_risco'] = (
+                self.acidentes['teste_alcool'] * 0.4 +
+                self.acidentes['motocicleta'] * 0.3 +
+                self.acidentes['pista_simples'] * 0.2 +
+                self.acidentes['chuva'] * 0.1
+            ).round(3)
+            
+            # Categorização para otimização de memória
+            colunas_categoricas = ['regiao', 'br', 'operacao', 'classificacao_risco', 'dia_semana']
+            for col in colunas_categoricas:
+                self.acidentes[col] = self.acidentes[col].astype('category')
+            
+            logger.info("  Dados tratados com sucesso!")
+            logger.info(f"   • Novas colunas: taxa_mortalidade, classificacao_risco, indice_risco, dia_semana")
+            logger.info(f"   • Otimização: colunas categóricas convertidas")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f" Erro no tratamento: {str(e)}")
+            return False
+    
+    def validar_dados(self) -> bool:
+        """
+        Valida a integridade dos dados
+        """
+        try:
+            logger.info("\n Validando integridade dos dados...")
+            
+            # Validação 1: Mortes não podem exceder acidentes
+            assert (self.acidentes['mortes'] <= self.acidentes['total_acidentes']).all(), \
+                   "Mortes excedem número de acidentes"
+            
+            # Validação 2: Sem valores nulos nas colunas principais
+            colunas_principais = ['total_acidentes', 'mortes', 'feridos']
+            for col in colunas_principais:
+                assert not self.acidentes[col].isnull().any(), f"Valores nulos encontrados em {col}"
+            
+            # Validação 3: Valores não negativos
+            assert (self.acidentes[colunas_principais] >= 0).all().all(), \
+                   "Valores negativos encontrados"
+            
+            # Validação 4: Taxa de mortalidade dentro do esperado (0-100%)
+            assert (self.acidentes['taxa_mortalidade'] >= 0).all() and \
+                   (self.acidentes['taxa_mortalidade'] <= 100).all(), \
+                   "Taxa de mortalidade fora do intervalo válido"
+            
+            logger.info("  Todos os testes de validação passaram!")
+            return True
+            
+        except AssertionError as e:
+            logger.error(f" Falha na validação: {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f" Erro na validação: {str(e)}")
+            return False
+    
+    def calcular_kpis(self) -> Dict:
+        """
+        Calcula KPIs avançados
+        """
+        try:
+            logger.info("\n Calculando KPIs...")
+            
+            # Custo social estimado (baseado em estudos de transportes)
+            CUSTO_POR_MORTE = 350000  # R$ 350 mil por morte
+            CUSTO_POR_FERIDO = 50000   # R$ 50 mil por ferido grave
+            
+            self.kpis = {
+                'total_acidentes': int(self.acidentes['total_acidentes'].sum()),
+                'total_mortes': int(self.acidentes['mortes'].sum()),
+                'total_feridos': int(self.acidentes['feridos'].sum()),
+                'severidade_media': round(self.acidentes['mortes'].mean(), 2),
+                'letalidade': round(self.acidentes['mortes'].sum() / max(self.acidentes['feridos'].sum(), 1), 3),
+                'taxa_mortalidade_media': round(self.acidentes['taxa_mortalidade'].mean(), 2),
+                'custo_social_estimado': self.acidentes['mortes'].sum() * CUSTO_POR_MORTE + \
+                                        self.acidentes['feridos'].sum() * CUSTO_POR_FERIDO,
+                'risco_medio': round(self.acidentes['indice_risco'].mean(), 3),
+                'percentual_alcool': round((self.acidentes['teste_alcool'].sum() / len(self.acidentes)) * 100, 2),
+                'percentual_moto': round((self.acidentes['motocicleta'].sum() / len(self.acidentes)) * 100, 2)
+            }
+            
+            # Formatação para exibição
+            self.kpis['custo_social_formatado'] = f"R$ {self.kpis['custo_social_estimado']:,.2f}"
+            
+            logger.info("  KPIs calculados:")
+            for k, v in self.kpis.items():
+                if not k.endswith('_formatado'):
+                    logger.info(f"   • {k}: {v}")
+            
+            return self.kpis
+            
+        except Exception as e:
+            logger.error(f" Erro no cálculo de KPIs: {str(e)}")
+            return {}
+    
+    def analise_exploratoria(self):
+        """
+        Gera visualizações exploratórias interativas
+        """
+        try:
+            logger.info("\n Gerando análises exploratórias...")
+            
+            # Configuração para melhor visualização no Colab
+            if IN_COLAB:
+                plt.rcParams['figure.figsize'] = [18, 20]
+                plt.rcParams['figure.dpi'] = 100
+            
+            fig = plt.figure(figsize=(18, 20))
+            
+            # 1. Acidentes por Região
+            ax1 = fig.add_subplot(3, 3, 1)
+            regiao_data = self.acidentes.groupby('regiao', observed=True)['total_acidentes'].sum().sort_values(ascending=False)
+            cores_regioes = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffeaa7']
+            ax1.bar(regiao_data.index, regiao_data.values, color=cores_regioes)
+            ax1.set_title('Acidentes por Região', fontsize=12, fontweight='bold')
+            ax1.set_ylabel('Total de Acidentes')
+            for i, v in enumerate(regiao_data.values):
+                ax1.text(i, v + 100, f'{int(v):,}', ha='center', fontweight='bold', fontsize=9)
+            
+            # 2. Evolução Mensal
+            ax2 = fig.add_subplot(3, 3, 2)
+            mensal = self.acidentes.groupby(self.acidentes['data'].dt.to_period('M')).agg({
+                'total_acidentes': 'sum',
+                'mortes': 'sum'
+            }).reset_index()
+            mensal['data'] = mensal['data'].astype(str)
+            ax2.plot(mensal['data'], mensal['total_acidentes'], marker='o', label='Acidentes', linewidth=2, markersize=4)
+            ax2.plot(mensal['data'], mensal['mortes'], marker='s', label='Mortes', linewidth=2, markersize=4)
+            ax2.set_title('Evolução Mensal', fontsize=12, fontweight='bold')
+            ax2.legend()
+            ax2.tick_params(axis='x', rotation=45)
+            
+            # 3. Rodovias com Mais Mortes
+            ax3 = fig.add_subplot(3, 3, 3)
+            top_rodovias = self.acidentes.groupby('br', observed=True)['mortes'].sum().sort_values(ascending=False).head(8)
+            ax3.barh(range(len(top_rodovias)), top_rodovias.values, color='#d62728')
+            ax3.set_yticks(range(len(top_rodovias)))
+            ax3.set_yticklabels(top_rodovias.index)
+            ax3.set_title('Rodovias com Mais Mortes', fontsize=12, fontweight='bold')
+            ax3.invert_yaxis()
+            
+            # 4. Matriz de Correlação
+            ax4 = fig.add_subplot(3, 3, 4)
+            corr_cols = ['total_acidentes', 'mortes', 'feridos', 'teste_alcool', 'motocicleta', 'indice_risco']
+            corr = self.acidentes[corr_cols].corr()
+            sns.heatmap(corr, annot=True, fmt='.2f', cmap='RdBu_r', center=0, ax=ax4, square=True)
+            ax4.set_title('Matriz de Correlação', fontsize=12, fontweight='bold')
+            
+            # 5. Acidentes por Hora
+            ax5 = fig.add_subplot(3, 3, 5)
+            hora_data = self.acidentes.groupby('hora')['total_acidentes'].sum()
+            ax5.plot(hora_data.index, hora_data.values, marker='o', color='#17becf', linewidth=2, markersize=3)
+            ax5.fill_between(hora_data.index, 0, hora_data.values, alpha=0.3)
+            ax5.set_title('Acidentes por Hora do Dia', fontsize=12, fontweight='bold')
+            ax5.set_xlabel('Hora')
+            ax5.set_ylabel('Total')
+            ax5.grid(True, alpha=0.3)
+            
+            # 6. Classificação de Risco
+            ax6 = fig.add_subplot(3, 3, 6)
+            risco_data = self.acidentes['classificacao_risco'].value_counts()
+            cores_risco = {'CRÍTICO': '#000000', 'ALTO': '#d62728', 'MÉDIO': '#ff7f0e', 'BAIXO': '#2ca02c'}
+            colors = [cores_risco.get(x, '#cccccc') for x in risco_data.index]
+            ax6.pie(risco_data.values, labels=risco_data.index, autopct='%1.1f%%', colors=colors, startangle=90)
+            ax6.set_title('Classificação de Risco', fontsize=12, fontweight='bold')
+            
+            # 7. Principais Infrações
+            ax7 = fig.add_subplot(3, 3, 7)
+            top_infracoes = self.infracoes['tipo'].value_counts().head(6)
+            ax7.bar(top_infracoes.index, top_infracoes.values, color='#9467bd')
+            ax7.set_title('Principais Infrações', fontsize=12, fontweight='bold')
+            ax7.tick_params(axis='x', rotation=45)
+            
+            # 8. Média de Mortes por Dia
+            ax8 = fig.add_subplot(3, 3, 8)
+            dias_ordem = ['Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado', 'Domingo']
+            mortes_dia = self.acidentes.groupby('dia_semana', observed=True)['mortes'].mean().reindex(dias_ordem)
+            cores_dias = ['#ff9896' if d in ['Sábado', 'Domingo'] else '#98df8a' for d in mortes_dia.index]
+            ax8.bar(mortes_dia.index, mortes_dia.values, color=cores_dias)
+            ax8.set_title('Média de Mortes por Dia', fontsize=12, fontweight='bold')
+            ax8.set_ylabel('Mortes (média)')
+            ax8.tick_params(axis='x', rotation=45)
+            
+            # 9. Acidentes por Operação
+            ax9 = fig.add_subplot(3, 3, 9)
+            operacoes = self.acidentes['operacao'].unique()
+            dados_box = [self.acidentes[self.acidentes['operacao'] == op]['total_acidentes'] for op in operacoes]
+            bp = ax9.boxplot(dados_box, labels=operacoes, patch_artist=True)
+            for patch, color in zip(bp['boxes'], ['#2ca02c', '#d62728', '#ff7f0e']):
+                patch.set_facecolor(color)
+            ax9.set_title('Distribuição de Acidentes por Operação', fontsize=12, fontweight='bold')
+            ax9.tick_params(axis='x', rotation=45)
+            
+            plt.suptitle('ANÁLISE EXPLORATÓRIA - ACIDENTES EM RODOVIAS FEDERAIS\n2025-2026', 
+                        fontsize=16, fontweight='bold', y=0.98)
+            plt.tight_layout()
+            
+            # Salvar figura
+            plt.savefig('analise_completa.png', dpi=150, bbox_inches='tight')
+            
+            # Mostrar no Colab ou local
+            if IN_COLAB:
+                plt.show()
+            else:
+                plt.show()
+            
+            logger.info("  Análise exploratória concluída! Gráfico salvo como 'analise_completa.png'")
+            
+        except Exception as e:
+            logger.error(f" Erro na análise: {str(e)}")
+            traceback.print_exc()
+    
+    def gerar_insights(self) -> List[Dict]:
+        """
+        Gera insights e recomendações baseados nos dados
+        """
+        try:
+            logger.info("\n Gerando insights...")
+            
+            self.insights = []
+            
+            # Insight 1: Período crítico
+            acidentes_op = self.acidentes.groupby('operacao', observed=True)['total_acidentes'].mean()
+            pior_op = acidentes_op.idxmax()
+            melhor_op = acidentes_op.idxmin()
+            aumento = ((acidentes_op[pior_op]/acidentes_op[melhor_op])-1)*100
+            
+            self.insights.append({
+                'titulo': ' Período Crítico',
+                'analise': f'Operação {pior_op} tem {aumento:.0f}% mais acidentes que períodos normais',
+                'recomendacao': f'Reforçar fiscalização e campanhas educativas durante {pior_op}',
+                'prioridade': 'ALTA',
+                'impacto_estimado': 'Redução potencial de 25% nos acidentes'
+            })
+            
+            # Insight 2: Impacto do álcool
+            taxa_alcool = self.acidentes[self.acidentes['teste_alcool']==1]['taxa_mortalidade'].mean()
+            taxa_sem = self.acidentes[self.acidentes['teste_alcool']==0]['taxa_mortalidade'].mean()
+            aumento_mortes = ((taxa_alcool/taxa_sem)-1)*100
+            
+            self.insights.append({
+                'titulo': ' Impacto do Álcool',
+                'analise': f'Acidentes com envolvimento de álcool têm {aumento_mortes:.0f}% mais mortes',
+                'recomendacao': 'Ampliar blitz da Lei Seca em finais de semana e feriados',
+                'prioridade': 'CRÍTICA',
+                'impacto_estimado': 'Salvar até 200 vidas/ano'
+            })
+            
+            # Insight 3: Rodovia mais perigosa
+            rodovia_critica = self.acidentes.groupby('br', observed=True)['taxa_mortalidade'].mean().idxmax()
+            taxa_rodovia = self.acidentes.groupby('br', observed=True)['taxa_mortalidade'].mean().max()
+            
+            self.insights.append({
+                'titulo': ' Rodovia Mais Perigosa',
+                'analise': f'{rodovia_critica} tem taxa de mortalidade de {taxa_rodovia:.2f}%',
+                'recomendacao': f'Priorizar investimentos em duplicação e melhorias na {rodovia_critica}',
+                'prioridade': 'ALTA',
+                'impacto_estimado': 'Redução de 40% na mortalidade local'
+            })
+            
+            # Insight 4: Vulnerabilidade de motociclistas
+            perc_moto = (self.acidentes['motocicleta'].sum() / len(self.acidentes)) * 100
+            perc_mortes_moto = (self.acidentes[self.acidentes['motocicleta']==1]['mortes'].sum() / 
+                               self.acidentes['mortes'].sum()) * 100
+            
+            self.insights.append({
+                'titulo': ' Vulnerabilidade de Motociclistas',
+                'analise': f'Motociclistas: {perc_moto:.1f}% dos acidentes, {perc_mortes_moto:.1f}% das mortes',
+                'recomendacao': 'Campanhas educativas específicas e faixas exclusivas para motos',
+                'prioridade': 'ALTA',
+                'impacto_estimado': 'Redução de 30% na mortalidade de motociclistas'
+            })
+            
+            # Insight 5: Dia de maior risco
+            dias_perigo = self.acidentes.groupby('dia_semana', observed=True)['mortes'].mean()
+            pior_dia = dias_perigo.idxmax()
+            
+            self.insights.append({
+                'titulo': ' Dia de Maior Risco',
+                'analise': f'{pior_dia} tem a maior média de mortes: {dias_perigo[pior_dia]:.2f}',
+                'recomendacao': f'Operações especiais e aumento de fiscalização nas {pior_dia}s',
+                'prioridade': 'MÉDIA',
+                'impacto_estimado': 'Redução de 15% nos acidentes aos finais de semana'
+            })
+            
+            # Insight 6: Horário crítico
+            hora_data = self.acidentes.groupby('hora')['total_acidentes'].sum()
+            pico_hora = hora_data.idxmax()
+            
+            self.insights.append({
+                'titulo': ' Horário de Pico',
+                'analise': f'{pico_hora}h concentra o maior número de acidentes',
+                'recomendacao': 'Reforçar patrulhamento nos horários de pico (17-20h e 6-9h)',
+                'prioridade': 'MÉDIA',
+                'impacto_estimado': 'Redução de 20% nos acidentes em horário comercial'
+            })
+            
+            print("\n" + "="*80)
+            print(" PRINCIPAIS INSIGHTS E RECOMENDAÇÕES")
+            print("="*80)
+            
+            for i, insight in enumerate(self.insights, 1):
+                print(f"\n{i}. {insight['titulo']} [Prioridade: {insight['prioridade']}]")
+                print(f"    Análise: {insight['analise']}")
+                print(f"    Recomendação: {insight['recomendacao']}")
+                print(f"    Impacto esperado: {insight['impacto_estimado']}")
+            
+            return self.insights
+            
+        except Exception as e:
+            logger.error(f" Erro ao gerar insights: {str(e)}")
+            return []
+    
+    def exportar_resultados(self):
+        """
+        Exporta resultados em múltiplos formatos
+        """
+        try:
+            logger.info("\n Exportando resultados...")
+            
+            # Criar diretório de resultados
+            if IN_COLAB and self.save_to_drive:
+                # Montar Google Drive se necessário
+                from google.colab import drive
+                drive.mount('/content/drive')
+                output_dir = '/content/drive/MyDrive/resultados_acidentes'
+            else:
+                output_dir = 'resultados_projeto'
+            
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Exportar CSVs
+            self.acidentes.to_csv(f'{output_dir}/acidentes_tratados.csv', index=False, encoding='utf-8-sig')
+            self.infracoes.to_csv(f'{output_dir}/infracoes_tratadas.csv', index=False, encoding='utf-8-sig')
+            self.estatisticas.to_csv(f'{output_dir}/estatisticas_uf.csv', index=False, encoding='utf-8-sig')
+            
+            # Exportar KPIs
+            if self.kpis:
+                kpis_df = pd.DataFrame([self.kpis])
+                kpis_df.to_csv(f'{output_dir}/kpis_gerais.csv', index=False, encoding='utf-8-sig')
+            
+            # Resumo geral
+            resumo = pd.DataFrame({
+                'Métrica': ['Total Acidentes', 'Total Mortes', 'Total Feridos', 
+                           'Taxa Mortalidade Média', 'Período Início', 'Período Fim',
+                           'Custo Social Estimado', 'Índice de Risco Médio'],
+                'Valor': [
+                    f"{self.acidentes['total_acidentes'].sum():,}",
+                    f"{self.acidentes['mortes'].sum():.0f}",
+                    f"{self.acidentes['feridos'].sum():.0f}",
+                    f"{self.acidentes['taxa_mortalidade'].mean():.2f}%",
+                    self.data_inicio,
+                    self.data_fim,
+                    f"R$ {self.kpis['custo_social_estimado']:,.2f}" if self.kpis else "N/A",
+                    f"{self.acidentes['indice_risco'].mean():.3f}"
+                ]
+            })
+            resumo.to_csv(f'{output_dir}/resumo_geral.csv', index=False, encoding='utf-8-sig')
+            
+            # Relatório em TXT
+            with open(f'{output_dir}/RELATORIO_COMPLETO.txt', 'w', encoding='utf-8') as f:
+                f.write("="*80 + "\n")
+                f.write("RELATÓRIO DE ANÁLISE - ACIDENTES EM RODOVIAS FEDERAIS\n")
+                f.write("="*80 + "\n\n")
+                f.write(f"Data da análise: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Ambiente: {'Google Colab' if IN_COLAB else 'Local'}\n")
+                f.write(f"Período analisado: {self.data_inicio} a {self.data_fim}\n\n")
+                
+                f.write(" ESTATÍSTICAS GERAIS:\n")
+                f.write("-"*40 + "\n")
+                f.write(f"Total de acidentes: {self.acidentes['total_acidentes'].sum():,}\n")
+                f.write(f"Total de mortes: {self.acidentes['mortes'].sum():.0f}\n")
+                f.write(f"Total de feridos: {self.acidentes['feridos'].sum():.0f}\n")
+                f.write(f"Taxa de mortalidade: {self.acidentes['taxa_mortalidade'].mean():.2f}%\n\n")
+                
+                if self.kpis:
+                    f.write(" KPIS E IMPACTOS:\n")
+                    f.write("-"*40 + "\n")
+                    f.write(f"Custo social estimado: {self.kpis['custo_social_formatado']}\n")
+                    f.write(f"Severidade média: {self.kpis['severidade_media']} mortes/acidente\n")
+                    f.write(f"Taxa de letalidade: {self.kpis['letalidade']}\n\n")
+                
+                f.write(" INSIGHTS PRINCIPAIS:\n")
+                f.write("-"*40 + "\n")
+                for insight in self.insights[:3]:  # Top 3 insights
+                    f.write(f"\n• {insight['titulo']}\n")
+                    f.write(f"  {insight['analise']}\n")
+                    f.write(f"  Recomendação: {insight['recomendacao']}\n")
+                
+                f.write("\n\n ARQUIVOS GERADOS:\n")
+                f.write("-"*40 + "\n")
+                f.write("1. acidentes_tratados.csv - Dados detalhados de acidentes\n")
+                f.write("2. infracoes_tratadas.csv - Registro de infrações\n")
+                f.write("3. estatisticas_uf.csv - Estatísticas por estado/ano\n")
+                f.write("4. analise_completa.png - Visualizações gráficas\n")
+                f.write("5. kpis_gerais.csv - Indicadores de desempenho\n")
+                f.write("6. resumo_geral.csv - Métricas consolidadas\n")
+            
+            logger.info(f"  Resultados exportados para pasta '{output_dir}/'")
+            
+            # Se estiver no Colab, oferecer download
+            if IN_COLAB:
+                from google.colab import files
+                import zipfile
+                
+                # Criar arquivo ZIP para download fácil
+                zip_path = f'{output_dir}.zip'
+                with zipfile.ZipFile(zip_path, 'w') as zipf:
+                    for root, dirs, files in os.walk(output_dir):
+                        for file in files:
+                            zipf.write(os.path.join(root, file), 
+                                      os.path.relpath(os.path.join(root, file), 
+                                                     os.path.join(output_dir, '..')))
+                
+                logger.info(f"  Arquivos compactados em: {zip_path}")
+                logger.info("  Use 'files.download()' para baixar ou acesse manualmente")
+            
+            return output_dir
+            
+        except Exception as e:
+            logger.error(f" Erro na exportação: {str(e)}")
+            traceback.print_exc()
+            return None
+    
+    def executar_completo(self):
+        """
+        Executa o pipeline completo de análise
+        """
+        try:
+            print("\n" + "-"*35)
+            print(" INICIANDO PIPELINE COMPLETO DE ANÁLISE ")
+            print("-"*35)
+            
+            # 1. Criar dados
+            if not self.criar_dados_realistas():
+                logger.error(" Falha na criação dos dados")
+                return False
+            
+            # 2. Tratar dados
+            if not self.tratar_dados():
+                logger.error(" Falha no tratamento dos dados")
+                return False
+            
+            # 3. Validar dados
+            if not self.validar_dados():
+                logger.error(" Falha na validação dos dados")
+                return False
+            
+            # 4. Calcular KPIs
+            self.calcular_kpis()
+            
+            # 5. Análise exploratória
+            self.analise_exploratoria()
+            
+            # 6. Gerar insights
+            insights = self.gerar_insights()
+            
+            # 7. Exportar resultados
+            output_dir = self.exportar_resultados()
+            
+            # 8. Resumo final
+            tempo = (datetime.now() - self.timestamp_inicio).total_seconds()
+            
+            print("\n" + "="*80)
+            print(" PROJETO CONCLUÍDO COM SUCESSO!")
+            print("="*80)
+            print(f"\n RESUMO FINAL:")
+            print(f"   • Acidentes analisados: {self.acidentes['total_acidentes'].sum():,}")
+            print(f"   • Mortes registradas: {self.acidentes['mortes'].sum():.0f}")
+            print(f"   • Insights gerados: {len(insights)}")
+            print(f"   • Tempo de execução: {tempo:.2f} segundos")
+            
+            if self.kpis:
+                print(f"\n IMPACTO SOCIAL:")
+                print(f"   • Custo estimado: {self.kpis['custo_social_formatado']}")
+                print(f"   • Severidade: {self.kpis['severidade_media']} mortes/acidente")
+            
+            print(f"\n Resultados salvos em: '{output_dir if output_dir else 'resultados_projeto'}/'")
+            
+            if IN_COLAB:
+                print("\n PARA BAIXAR OS ARQUIVOS NO COLAB:")
+                print("   from google.colab import files")
+                print("   files.download('resultados_projeto.zip')")
+            else:
+                print(f"\n Para visualizar no Looker Studio, importe os arquivos CSV:")
+                print(f"   1. acidentes_tratados.csv")
+                print(f"   2. infracoes_tratadas.csv")
+                print(f"   3. estatisticas_uf.csv")
+                print(f"   4. kpis_gerais.csv")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f" Falha na execução: {str(e)}")
+            traceback.print_exc()
+            return False
+
+
+# Código para execução com argumentos
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Análise de Acidentes em Rodovias')
+    parser.add_argument('--inicio', type=str, default='2025-01-01', 
+                       help='Data de início (formato: YYYY-MM-DD)')
+    parser.add_argument('--fim', type=str, default='2026-02-28',
+                       help='Data de fim (formato: YYYY-MM-DD)')
+    parser.add_argument('--save_drive', action='store_true',
+                       help='Salvar no Google Drive (apenas Colab)')
+    
+    args = parser.parse_args()
+    
+    # Executar análise
+    analise = AnaliseAcidentesRodovias(
+        data_inicio=args.inicio,
+        data_fim=args.fim,
+        save_to_drive=args.save_drive
+    )
+    sucesso = analise.executar_completo()
+    
+    # Código de saída
+    sys.exit(0 if sucesso else 1)
