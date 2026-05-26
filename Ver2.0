@@ -802,6 +802,24 @@ class AnaliseAcidentesRodovias:
 if __name__ == "__main__":
     import argparse
     
+    # Filtrar argumentos do Colab antes do parsing
+    import sys
+    filtered_args = []
+    skip_next = False
+    
+    for i, arg in enumerate(sys.argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == '-f' or arg.startswith('-f'):
+            # Pular o argumento -f e seu valor
+            if i + 1 < len(sys.argv) and not sys.argv[i+1].startswith('-'):
+                skip_next = True
+            continue
+        filtered_args.append(arg)
+    
+    sys.argv = filtered_args
+    
     parser = argparse.ArgumentParser(description='Análise de Acidentes em Rodovias')
     parser.add_argument('--inicio', type=str, default='2025-01-01', 
                        help='Data de início (formato: YYYY-MM-DD)')
