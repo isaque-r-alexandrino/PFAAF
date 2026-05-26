@@ -1,0 +1,462 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+import warnings
+import sys
+import os
+import json
+import logging
+from typing import Dict, List, Tuple, Optional
+
+warnings.filterwarnings('ignore')
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+np.random.seed(42)
+plt.style.use('seaborn-v0_8-darkgrid')
+sns.set_palette("husl")
+
+class AnaliseAcidentesRodovias:
+
+    def __init__(self):
+        self.acidentes = None
+        self.infracoes = None
+        self.estatisticas = None
+        self.timestamp_inicio = datetime.now()
+
+        logger.info("="*70)
+        logger.info("INICIANDO PROJETO DE ANÁLISE DE ACIDENTES")
+        logger.info(f"Timestamp: {self.timestamp_inicio.strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("="*70)
+
+    def criar_dados_realistas(self) -> bool:
+
+        try:
+            logger.info(" Criando datasets realistas...")
+
+            logger.info("  → Criando tabela de acidentes...")
+
+            datas = pd.date_range(start='2025-01-01', end='2026-02-28', freq='D')
+            n_dias = len(datas)
+
+            dias_semana = datas.dayofweek
+            meses = datas.month
+
+            acidentes_base = np.random.poisson(lam=45, size=n_dias)
+            acidentes_base = np.maximum(acidentes_base, 20)
+
+            fator_fim_semana = np.where(dias_semana >= 5, 1.3, 1.0)
+            fator_ferias = np.where((meses == 12) | (meses == 1) | (meses == 7), 1.2, 1.0)
+
+            acidentes_ajustados = (acidentes_base * fator_fim_semana * fator_ferias).astype(int)
+            acidentes_ajustados = np.maximum(acidentes_ajustados, 25)
+
+            taxa_morte_base = 0.08
+            mortes = np.random.binomial(acidentes_ajustados, taxa_morte_base)
+
+            feridos = np.random.poisson(lam=acidentes_ajustados * 0.4)
+            feridos = np.maximum(feridos, acidentes_ajustados * 0.1).astype(int)
+
+            regioes = ['Norte', 'Nordeste', 'Centro-Oeste', 'Sudeste', 'Sul']
+            regioes_probs = [0.08, 0.27, 0.15, 0.35, 0.15]
+
+            rodovias = ['BR-101', 'BR-116', 'BR-153', 'BR-324', 'BR-040', 'BR-020', 'BR-262', 'BR-381']
+            rodovias_probs = [0.18, 0.15, 0.12, 0.10, 0.10, 0.12, 0.10, 0.13]
+
+            self.acidentes = pd.DataFrame({
+                'data': datas,
+                'total_acidentes': acidentes_ajustados,
+                'mortes': mortes,
+                'feridos': feridos,
+                'regiao': np.random.choice(regioes, n_dias, p=regioes_probs),
+                'br': np.random.choice(rodovias, n_dias, p=rodovias_probs),
+                'teste_alcool': np.random.choice([0, 1], n_dias, p=[0.85, 0.15]),
+                'motocicleta': np.random.choice([0, 1], n_dias, p=[0.72, 0.28]),
+                'chuva': np.random.choice([0, 1], n_dias, p=[0.70, 0.30]),
+                'pista_simples': np.random.choice([0, 1], n_dias, p=[0.40, 0.60])
+            })
+
+            self.acidentes['operacao'] = 'Normal'
+            mask_rodovida = (self.acidentes['data'] >= '2025-12-18') & (self.acidentes['data'] <= '2026-02-28')
+            mask_anonovo = (self.acidentes['data'] >= '2025-12-24') & (self.acidentes['data'] <= '2026-01-01')
+            self.acidentes.loc[mask_rodovida, 'operacao'] = 'Rodovida 2025/2026'
+            self.acidentes.loc[mask_anonovo, 'operacao'] = 'Ano Novo 2025/2026'
+
+            logger.info("  → Criando tabela de infrações...")
+
+            n_infracoes = 60000
+            tipos_infracao = [
+                'Excesso de velocidade', 'Ultrapassagem irregular', 'Embriaguez',
+                'Sem cinto de segurança', 'Uso de celular', 'Recusa ao teste'
+            ]
+            probs_infracoes = [0.35, 0.20, 0.12, 0.12, 0.11, 0.10]
+            multas = [880.41, 2937.70, 2937.70, 195.23, 2937.70, 2937.70]
+
+            ufs = ['SP', 'MG', 'RJ', 'BA', 'PR', 'RS', 'SC', 'GO', 'PE', 'CE']
+
+            datas_infracoes = np.random.choice(datas, n_infracoes)
+
+            self.infracoes = pd.DataFrame({
+                'id_infracao': range(1, n_infracoes + 1),
+                'tipo': np.random.choice(tipos_infracao, n_infracoes, p=probs_infracoes),
+                'valor_multa': np.random.choice(multas, n_infracoes, p=probs_infracoes),
+                'uf': np.random.choice(ufs, n_infracoes),
+                'data': datas_infracoes,
+                'veiculo_apreendido': np.random.choice([0, 1], n_infracoes, p=[0.95, 0.05]),
+                'detido': np.random.choice([0, 1], n_infracoes, p=[0.998, 0.002])
+            })
+
+            gravidade_map = {
+                'Excesso de velocidade': 'Média',
+                'Ultrapassagem irregular': 'Alta',
+                'Embriaguez': 'Altíssima',
+                'Sem cinto de segurança': 'Baixa',
+                'Uso de celular': 'Alta',
+                'Recusa ao teste': 'Altíssima'
+            }
+            self.infracoes['gravidade'] = self.infracoes['tipo'].map(gravidade_map)
+
+            logger.info("  → Criando tabela de estatísticas por estado...")
+
+            estados_dados = []
+            for uf in ufs:
+                for ano in [2025, 2026]:
+                    if ano == 2026:
+                        meses = 4
+                    else:
+                        meses = 12
+
+                    if uf in ['SP', 'MG', 'BA']:
+                        fator = 1.5
+                    elif uf in ['RJ', 'PR', 'RS']:
+                        fator = 1.2
+                    else:
+                        fator = 0.8
+
+                    estados_dados.append({
+                        'uf': uf,
+                        'ano': ano,
+                        'total_acidentes': int(np.random.poisson(lam=800 * fator) * (meses/12)),
+                        'total_mortes': int(np.random.poisson(lam=65 * fator) * (meses/12)),
+                        'total_feridos': int(np.random.poisson(lam=950 * fator) * (meses/12)),
+                        'infracoes_aplicadas': int(np.random.poisson(lam=3000 * fator) * (meses/12)),
+                        'valor_arrecadado': float(np.random.uniform(500000, 2000000) * fator * (meses/12))
+                    })
+
+            self.estatisticas = pd.DataFrame(estados_dados)
+
+            logger.info(f" Datasets criados:")
+            logger.info(f"   • Acidentes: {len(self.acidentes):,} dias, {len(self.acidentes.columns)} colunas")
+            logger.info(f"   • Infrações: {len(self.infracoes):,} registros, {len(self.infracoes.columns)} colunas")
+            logger.info(f"   • Estatísticas: {len(self.estatisticas):,} registros, {len(self.estatisticas.columns)} colunas")
+
+            return True
+
+        except Exception as e:
+            logger.error(f" Erro ao criar datasets: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def tratar_dados(self) -> bool:
+
+        try:
+            logger.info("\n Tratando dados...")
+
+            self.acidentes['data'] = pd.to_datetime(self.acidentes['data'])
+            self.acidentes['ano'] = self.acidentes['data'].dt.year
+            self.acidentes['mes'] = self.acidentes['data'].dt.month
+            self.acidentes['dia_semana'] = self.acidentes['data'].dt.day_name()
+            self.acidentes['trimestre'] = self.acidentes['data'].dt.quarter
+
+            self.acidentes['taxa_mortalidade'] = (
+                self.acidentes['mortes'] / self.acidentes['total_acidentes'] * 100
+            ).round(2)
+
+            def classificar_risco(row):
+                if row['teste_alcool'] == 1 and row['motocicleta'] == 1:
+                    return 'CRÍTICO'
+                elif row['teste_alcool'] == 1:
+                    return 'ALTO'
+                elif row['motocicleta'] == 1:
+                    return 'MÉDIO'
+                else:
+                    return 'BAIXO'
+
+            self.acidentes['classificacao_risco'] = self.acidentes.apply(classificar_risco, axis=1)
+            self.acidentes['indice_risco'] = (
+                self.acidentes['teste_alcool'] * 0.4 +
+                self.acidentes['motocicleta'] * 0.3 +
+                self.acidentes['pista_simples'] * 0.2 +
+                self.acidentes['chuva'] * 0.1
+            ).round(3)
+
+            logger.info(" Dados tratados com sucesso!")
+            logger.info(f"   • Novas colunas: taxa_mortalidade, classificacao_risco, indice_risco")
+
+            return True
+
+        except Exception as e:
+            logger.error(f" Erro no tratamento: {str(e)}")
+            return False
+
+    def analise_exploratoria(self):
+
+        try:
+            logger.info("\n Gerando análises exploratórias...")
+
+            fig = plt.figure(figsize=(18, 20))
+
+            ax1 = fig.add_subplot(3, 3, 1)
+            regiao_data = self.acidentes.groupby('regiao')['total_acidentes'].sum().sort_values(ascending=False)
+            ax1.bar(regiao_data.index, regiao_data.values, color=['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffeaa7'])
+            ax1.set_title('Acidentes por Região', fontsize=12, fontweight='bold')
+            ax1.set_ylabel('Total de Acidentes')
+            for i, v in enumerate(regiao_data.values):
+                ax1.text(i, v + 100, f'{int(v):,}', ha='center', fontweight='bold', fontsize=9)
+
+            ax2 = fig.add_subplot(3, 3, 2)
+            mensal = self.acidentes.groupby(self.acidentes['data'].dt.to_period('M')).agg({
+                'total_acidentes': 'sum',
+                'mortes': 'sum'
+            }).reset_index()
+            mensal['data'] = mensal['data'].astype(str)
+            ax2.plot(mensal['data'], mensal['total_acidentes'], marker='o', label='Acidentes', linewidth=2)
+            ax2.plot(mensal['data'], mensal['mortes'], marker='s', label='Mortes', linewidth=2)
+            ax2.set_title('Evolução Mensal', fontsize=12, fontweight='bold')
+            ax2.legend()
+            ax2.tick_params(axis='x', rotation=45)
+
+            ax3 = fig.add_subplot(3, 3, 3)
+            top_rodovias = self.acidentes.groupby('br')['mortes'].sum().sort_values(ascending=False).head(8)
+            ax3.barh(range(len(top_rodovias)), top_rodovias.values, color='#d62728')
+            ax3.set_yticks(range(len(top_rodovias)))
+            ax3.set_yticklabels(top_rodovias.index)
+            ax3.set_title('Rodovias com Mais Mortes', fontsize=12, fontweight='bold')
+            ax3.invert_yaxis()
+
+            ax4 = fig.add_subplot(3, 3, 4)
+            corr_cols = ['total_acidentes', 'mortes', 'feridos', 'teste_alcool', 'motocicleta', 'indice_risco']
+            corr = self.acidentes[corr_cols].corr()
+            sns.heatmap(corr, annot=True, fmt='.2f', cmap='RdBu_r', center=0, ax=ax4, square=True)
+            ax4.set_title('Matriz de Correlação', fontsize=12, fontweight='bold')
+
+            ax5 = fig.add_subplot(3, 3, 5)
+            self.acidentes['hora'] = np.random.choice(range(24), len(self.acidentes))
+            hora_data = self.acidentes.groupby('hora')['total_acidentes'].sum()
+            ax5.plot(hora_data.index, hora_data.values, marker='o', color='#17becf', linewidth=2)
+            ax5.fill_between(hora_data.index, 0, hora_data.values, alpha=0.3)
+            ax5.set_title('Acidentes por Hora do Dia', fontsize=12, fontweight='bold')
+            ax5.set_xlabel('Hora')
+            ax5.set_ylabel('Total')
+
+            ax6 = fig.add_subplot(3, 3, 6)
+            risco_data = self.acidentes['classificacao_risco'].value_counts()
+            cores_risco = {'CRÍTICO': '#000000', 'ALTO': '#d62728', 'MÉDIO': '#ff7f0e', 'BAIXO': '#2ca02c'}
+            colors = [cores_risco.get(x, '#cccccc') for x in risco_data.index]
+            ax6.pie(risco_data.values, labels=risco_data.index, autopct='%1.1f%%', colors=colors, startangle=90)
+            ax6.set_title('Classificação de Risco', fontsize=12, fontweight='bold')
+
+            ax7 = fig.add_subplot(3, 3, 7)
+            top_infracoes = self.infracoes['tipo'].value_counts().head(6)
+            ax7.bar(top_infracoes.index, top_infracoes.values, color='#9467bd')
+            ax7.set_title('Principais Infrações', fontsize=12, fontweight='bold')
+            ax7.tick_params(axis='x', rotation=45)
+
+            ax8 = fig.add_subplot(3, 3, 8)
+            dias_ordem = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+            dias_pt = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo']
+            mortes_dia = self.acidentes.groupby('dia_semana')['mortes'].mean().reindex(dias_ordem)
+            cores_dias = ['#ff9896' if d in ['Saturday', 'Sunday'] else '#98df8a' for d in mortes_dia.index]
+            ax8.bar(dias_pt, mortes_dia.values, color=cores_dias)
+            ax8.set_title('Média de Mortes por Dia', fontsize=12, fontweight='bold')
+            ax8.set_ylabel('Mortes (média)')
+
+            ax9 = fig.add_subplot(3, 3, 9)
+            operacoes = self.acidentes['operacao'].unique()
+            dados_box = [self.acidentes[self.acidentes['operacao'] == op]['total_acidentes'] for op in operacoes]
+            ax9.boxplot(dados_box, labels=operacoes)
+            ax9.set_title('Acidentes por Operação', fontsize=12, fontweight='bold')
+            ax9.tick_params(axis='x', rotation=45)
+
+            plt.suptitle('ANÁLISE EXPLORATÓRIA - ACIDENTES EM RODOVIAS FEDERAIS',
+                        fontsize=16, fontweight='bold', y=0.98)
+            plt.tight_layout()
+            plt.savefig('analise_completa.png', dpi=150, bbox_inches='tight')
+            plt.show()
+
+            logger.info(" Análise exploratória concluída!")
+
+        except Exception as e:
+            logger.error(f" Erro na análise: {str(e)}")
+
+    def gerar_insights(self):
+
+        try:
+            logger.info("\n Gerando insights...")
+
+            insights = []
+
+            acidentes_op = self.acidentes.groupby('operacao')['total_acidentes'].mean()
+            pior_op = acidentes_op.idxmax()
+            melhor_op = acidentes_op.idxmin()
+
+            insights.append({
+                'titulo': 'Período Crítico',
+                'analise': f'Operação {pior_op} tem {((acidentes_op[pior_op]/acidentes_op[melhor_op])-1)*100:.0f}% mais acidentes que {melhor_op}',
+                'recomendacao': f'Reforçar fiscalização durante {pior_op}',
+                'prioridade': 'ALTA'
+            })
+
+            taxa_alcool = self.acidentes[self.acidentes['teste_alcool']==1]['taxa_mortalidade'].mean()
+            taxa_sem = self.acidentes[self.acidentes['teste_alcool']==0]['taxa_mortalidade'].mean()
+
+            insights.append({
+                'titulo': 'Impacto do Álcool',
+                'analise': f'Acidentes com álcool têm {((taxa_alcool/taxa_sem)-1)*100:.0f}% mais mortes',
+                'recomendacao': 'Ampliar blitz da Lei Seca em finais de semana',
+                'prioridade': 'CRÍTICA'
+            })
+
+            rodovia_critica = self.acidentes.groupby('br')['taxa_mortalidade'].mean().idxmax()
+            taxa_rodovia = self.acidentes.groupby('br')['taxa_mortalidade'].mean().max()
+
+            insights.append({
+                'titulo': 'Rodovia Mais Perigosa',
+                'analise': f'{rodovia_critica} tem taxa de mortalidade de {taxa_rodovia:.2f}%',
+                'recomendacao': f'Priorizar investimentos na {rodovia_critica}',
+                'prioridade': 'ALTA'
+            })
+
+            perc_moto = (self.acidentes['motocicleta'].sum() / len(self.acidentes)) * 100
+            perc_mortes_moto = (self.acidentes[self.acidentes['motocicleta']==1]['mortes'].sum() /
+                               self.acidentes['mortes'].sum()) * 100
+
+            insights.append({
+                'titulo': 'Vulnerabilidade de Motociclistas',
+                'analise': f'Motociclistas: {perc_moto:.1f}% dos acidentes, {perc_mortes_moto:.1f}% das mortes',
+                'recomendacao': 'Campanhas educativas e faixas exclusivas para motos',
+                'prioridade': 'ALTA'
+            })
+
+            dias_perigo = self.acidentes.groupby('dia_semana')['mortes'].mean()
+            pior_dia = dias_perigo.idxmax()
+
+            insights.append({
+                'titulo': 'Dia de Maior Risco',
+                'analise': f'{pior_dia} tem a maior média de mortes: {dias_perigo[pior_dia]:.2f}',
+                'recomendacao': f'Operações especiais nas {pior_dia}s',
+                'prioridade': 'MÉDIA'
+            })
+
+            print("\n" + "="*70)
+            print(" PRINCIPAIS INSIGHTS E RECOMENDAÇÕES")
+            print("="*70)
+
+            for i, insight in enumerate(insights, 1):
+                print(f"\n{i}. {insight['titulo']} [{insight['prioridade']}]")
+                print(f"       {insight['analise']}")
+                print(f"       {insight['recomendacao']}")
+
+            return insights
+
+        except Exception as e:
+            logger.error(f" Erro ao gerar insights: {str(e)}")
+            return []
+
+    def exportar_resultados(self):
+
+        try:
+            logger.info("\n Exportando resultados...")
+
+            os.makedirs('resultados_projeto', exist_ok=True)
+
+            self.acidentes.to_csv('resultados_projeto/acidentes_tratados.csv', index=False, encoding='utf-8-sig')
+            self.infracoes.to_csv('resultados_projeto/infracoes_tratadas.csv', index=False, encoding='utf-8-sig')
+            self.estatisticas.to_csv('resultados_projeto/estatisticas_uf.csv', index=False, encoding='utf-8-sig')
+
+            resumo = pd.DataFrame({
+                'Métrica': ['Total Acidentes', 'Total Mortes', 'Total Feridos',
+                           'Taxa Mortalidade Média', 'Período Início', 'Período Fim'],
+                'Valor': [
+                    f"{self.acidentes['total_acidentes'].sum():,}",
+                    f"{self.acidentes['mortes'].sum():.0f}",
+                    f"{self.acidentes['feridos'].sum():.0f}",
+                    f"{self.acidentes['taxa_mortalidade'].mean():.2f}%",
+                    "2025-01-01",
+                    "2026-02-28"
+                ]
+            })
+            resumo.to_csv('resultados_projeto/resumo_geral.csv', index=False, encoding='utf-8-sig')
+
+            with open('resultados_projeto/RELATORIO.txt', 'w', encoding='utf-8') as f:
+                f.write("="*70 + "\n")
+                f.write("RELATÓRIO DE ANÁLISE - ACIDENTES EM RODOVIAS FEDERAIS\n")
+                f.write("="*70 + "\n\n")
+                f.write(f"Data da análise: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Total de acidentes: {self.acidentes['total_acidentes'].sum():,}\n")
+                f.write(f"Total de mortes: {self.acidentes['mortes'].sum():.0f}\n")
+                f.write(f"Total de feridos: {self.acidentes['feridos'].sum():.0f}\n")
+                f.write(f"Taxa de mortalidade: {self.acidentes['taxa_mortalidade'].mean():.2f}%\n\n")
+                f.write("ARQUIVOS GERADOS:\n")
+                f.write("- acidentes_tratados.csv: Dados de acidentes\n")
+                f.write("- infracoes_tratadas.csv: Dados de infrações\n")
+                f.write("- estatisticas_uf.csv: Estatísticas por estado\n")
+                f.write("- analise_completa.png: Gráficos da análise\n")
+
+            logger.info(" Resultados exportados para pasta 'resultados_projeto/'")
+
+        except Exception as e:
+            logger.error(f" Erro na exportação: {str(e)}")
+
+    def executar_completo(self):
+
+        try:
+
+            if not self.criar_dados_realistas():
+                logger.error("Falha na criação dos dados")
+                return False
+
+            if not self.tratar_dados():
+                logger.error("Falha no tratamento dos dados")
+                return False
+
+            self.analise_exploratoria()
+
+            insights = self.gerar_insights()
+
+            self.exportar_resultados()
+
+            tempo = (datetime.now() - self.timestamp_inicio).total_seconds()
+
+            print("\n" + "="*70)
+            print(" PROJETO CONCLUÍDO COM SUCESSO!")
+            print("="*70)
+            print(f"\n RESUMO FINAL:")
+            print(f"   • Acidentes analisados: {self.acidentes['total_acidentes'].sum():,}")
+            print(f"   • Mortes registradas: {self.acidentes['mortes'].sum():.0f}")
+            print(f"   • Insights gerados: {len(insights)}")
+            print(f"   • Tempo de execução: {tempo:.2f} segundos")
+            print(f"\n Resultados salvos em: 'resultados_projeto/'")
+            print(f"\n Para o Looker Studio, importe os 3 arquivos CSV:")
+            print(f"   1. acidentes_tratados.csv")
+            print(f"   2. infracoes_tratadas.csv")
+            print(f"   3. estatisticas_uf.csv")
+
+            return True
+
+        except Exception as e:
+            logger.error(f" Falha na execução: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+if __name__ == "__main__":
+    analise = AnaliseAcidentesRodovias()
+    sucesso = analise.executar_completo()
