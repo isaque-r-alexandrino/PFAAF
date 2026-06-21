@@ -1,0 +1,15 @@
+{
+  "PERIOD": {
+    "START_DATE": "2025-01-01",
+    "END_DATE": "2026-02-28"
+  },
+  "DATA": {
+    "SEED": 42,
+    "ACIDENTES_BASE_LAMBDA": 45,
+    "TAXA_MORTE_BASE": 0.08
+  },
+  "COSTS": {
+    "CUSTO_POR_MORTE": 350000,
+    "CUSTO_POR_FERIDO": 50000
+  }
+}
