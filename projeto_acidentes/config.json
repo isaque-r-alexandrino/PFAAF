@@ -1,0 +1,59 @@
+{
+  "PROJECT": {
+    "NAME": "Análise de Acidentes em Rodovias Federais",
+    "VERSION": "2.0.0",
+    "AUTHOR": "Seu Nome"
+  },
+  "PERIOD": {
+    "START_DATE": "2025-01-01",
+    "END_DATE": "2026-02-28"
+  },
+  "DATA": {
+    "SEED": 42,
+    "ACIDENTES_BASE_LAMBDA": 45,
+    "TAXA_MORTE_BASE": 0.08,
+    "FATOR_FIM_SEMANA": 1.3,
+    "FATOR_FERIAS": 1.2,
+    "N_INFRACOES": 60000
+  },
+  "COSTS": {
+    "CUSTO_POR_MORTE": 350000,
+    "CUSTO_POR_FERIDO": 50000
+  },
+  "REGIONS": {
+    "NORTE": {"nome": "Norte", "prob": 0.08},
+    "NORDESTE": {"nome": "Nordeste", "prob": 0.27},
+    "CENTRO_OESTE": {"nome": "Centro-Oeste", "prob": 0.15},
+    "SUDESTE": {"nome": "Sudeste", "prob": 0.35},
+    "SUL": {"nome": "Sul", "prob": 0.15}
+  },
+  "RODOVIAS": [
+    {"nome": "BR-101", "prob": 0.18, "pista_simples": 0.2},
+    {"nome": "BR-116", "prob": 0.15, "pista_simples": 0.3},
+    {"nome": "BR-153", "prob": 0.12, "pista_simples": 0.7},
+    {"nome": "BR-324", "prob": 0.10, "pista_simples": 0.4},
+    {"nome": "BR-040", "prob": 0.10, "pista_simples": 0.1},
+    {"nome": "BR-020", "prob": 0.12, "pista_simples": 0.6},
+    {"nome": "BR-262", "prob": 0.10, "pista_simples": 0.8},
+    {"nome": "BR-381", "prob": 0.13, "pista_simples": 0.5}
+  ],
+  "INFRACOES": {
+    "tipos": [
+      {"nome": "Excesso de velocidade", "prob": 0.35, "multa": 880.41, "gravidade": "Média"},
+      {"nome": "Ultrapassagem irregular", "prob": 0.20, "multa": 2937.70, "gravidade": "Alta"},
+      {"nome": "Embriaguez", "prob": 0.12, "multa": 2937.70, "gravidade": "Altíssima"},
+      {"nome": "Sem cinto de segurança", "prob": 0.12, "multa": 195.23, "gravidade": "Baixa"},
+      {"nome": "Uso de celular", "prob": 0.11, "multa": 2937.70, "gravidade": "Alta"},
+      {"nome": "Recusa ao teste", "prob": 0.10, "multa": 2937.70, "gravidade": "Altíssima"}
+    ]
+  },
+  "UFS": ["SP", "MG", "RJ", "BA", "PR", "RS", "SC", "GO", "PE", "CE"],
+  "FATORES_ESTADUAIS": {
+    "SP": 1.5, "MG": 1.4, "BA": 1.3, "RJ": 1.2, "PR": 1.1,
+    "RS": 1.1, "SC": 0.9, "GO": 0.8, "PE": 0.8, "CE": 0.7
+  },
+  "OUTPUT": {
+    "DIR": "resultados",
+    "FORMATS": ["csv", "excel", "json"]
+  }
+}
